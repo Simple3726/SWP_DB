@@ -7,15 +7,15 @@
 USE master;
 GO
 
-IF EXISTS (SELECT name FROM sys.databases WHERE name = N'SEAL_HackathonDB')
-    DROP DATABASE SEAL_HackathonDB;
+IF EXISTS (SELECT name FROM sys.databases WHERE name = N'SWP_SEAL_HackathonDB')
+    DROP DATABASE SWP_SEAL_HackathonDB;
 GO
 
-CREATE DATABASE SEAL_HackathonDB
+CREATE DATABASE SWP_SEAL_HackathonDB
     COLLATE Vietnamese_CI_AS;
 GO
 
-USE SEAL_HackathonDB;
+USE SWP_SEAL_HackathonDB;
 GO
 
 -- ============================================================
