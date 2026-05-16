@@ -184,6 +184,7 @@ CREATE TABLE Events (
     EventID          INT           IDENTITY(1,1) PRIMARY KEY,
     EventName        NVARCHAR(300) NOT NULL,
     Description      NVARCHAR(MAX) NULL,
+    Location         NVARCHAR(200) NOT NULL,
     BannerImageURL   NVARCHAR(500) NULL,
     EventStatusID    TINYINT       NOT NULL DEFAULT 1 REFERENCES EventStatus(StatusID),
     RegistrationStart DATETIME2    NULL,
