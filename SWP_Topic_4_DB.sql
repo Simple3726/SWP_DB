@@ -937,5 +937,5 @@ CREATE NONCLUSTERED INDEX IX_Rounds_Event    ON Rounds(EventID);
 CREATE NONCLUSTERED INDEX IX_Categories_Event ON Categories(EventID);
 GO
 
-PRINT N'✅ SEAL_HackathonDB fixed and created successfully.';
+PRINT N' SEAL_HackathonDB fixed and created successfully.';
 GO
