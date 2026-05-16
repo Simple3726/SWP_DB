@@ -8,7 +8,12 @@ USE master;
 GO
 
 IF EXISTS (SELECT name FROM sys.databases WHERE name = N'SWP_SEAL_HackathonDB')
+BEGIN
+    -- Ép đóng tất cả các kết nối đang sử dụng database này
+    ALTER DATABASE SWP_SEAL_HackathonDB SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    -- Xóa database an toàn
     DROP DATABASE SWP_SEAL_HackathonDB;
+END
 GO
 
 CREATE DATABASE SWP_SEAL_HackathonDB
@@ -545,27 +550,50 @@ GO
 
 -- SP: Submit or update a team's submission
 CREATE OR ALTER PROCEDURE sp_UpsertSubmission
-    @TeamID            INT,
-    @RoundID           INT,
-    @RepositoryURL     NVARCHAR(500),
-    @DemoURL           NVARCHAR(500),
-    @ReportURL         NVARCHAR(500),
-    @SlideURL          NVARCHAR(500),
-    @Notes             NVARCHAR(MAX),
-    @SubmittedByUserID INT
+    @TeamID             INT,
+    @RoundID            INT,
+    @RepositoryURL      NVARCHAR(500),
+    @DemoURL            NVARCHAR(500),
+    @ReportURL          NVARCHAR(500),
+    @SlideURL           NVARCHAR(500),
+    @Notes              NVARCHAR(MAX),
+    -- Bổ sung các tham số nhận dữ liệu GitHub API
+    @RepoMetadataJSON   NVARCHAR(MAX) = NULL,
+    @RepoLastCommitAt   DATETIME2 = NULL,
+    @RepoStarCount      INT = NULL,
+    @RepoForkCount      INT = NULL,
+    @SubmittedByUserID  INT
 AS
 BEGIN
     SET NOCOUNT ON;
     DECLARE @SubID INT;
 
+    -- 1. KIỂM TRA LOGIC KHỐI: Đội có bị loại hay rút lui không?
+    DECLARE @TeamStatus TINYINT;
+    SELECT @TeamStatus = TeamStatusID FROM Teams WHERE TeamID = @TeamID;
+    IF @TeamStatus IN (3, 4) -- 3: Disqualified, 4: Withdrawn
+        THROW 51001, N'This team is disqualified or withdrawn and cannot submit.', 1;
+
+    -- 2. KIỂM TRA DEADLINE: Áp dụng chung cho cả Insert và Update
+    DECLARE @Deadline DATETIME2;
+    SELECT @Deadline = SubmissionDeadline FROM Rounds WHERE RoundID = @RoundID;
+    IF @Deadline IS NOT NULL AND GETUTCDATE() > @Deadline
+        THROW 51000, N'Submission deadline has passed.', 1;
+
+    -- 3. THỰC THI GHI DỮ LIỆU
     IF EXISTS (SELECT 1 FROM Submissions WHERE TeamID = @TeamID AND RoundID = @RoundID)
     BEGIN
+        -- Ghi đè bài đã có
         UPDATE Submissions
         SET    RepositoryURL      = @RepositoryURL,
                DemoURL            = @DemoURL,
                ReportURL          = @ReportURL,
                SlideURL           = @SlideURL,
                Notes              = @Notes,
+               RepoMetadataJSON   = @RepoMetadataJSON,
+               RepoLastCommitAt   = @RepoLastCommitAt,
+               RepoStarCount      = @RepoStarCount,
+               RepoForkCount      = @RepoForkCount,
                SubmissionStatusID = 2,
                SubmittedAt        = GETUTCDATE(),
                LastUpdatedAt      = GETUTCDATE(),
@@ -578,16 +606,13 @@ BEGIN
     END
     ELSE
     BEGIN
-        -- Check submission deadline
-        DECLARE @Deadline DATETIME2;
-        SELECT @Deadline = SubmissionDeadline FROM Rounds WHERE RoundID = @RoundID;
-        IF @Deadline IS NOT NULL AND GETUTCDATE() > @Deadline
-            THROW 51000, N'Submission deadline has passed.', 1;
-
+        -- Nộp bài mới
         INSERT INTO Submissions (TeamID, RoundID, RepositoryURL, DemoURL, ReportURL, SlideURL, 
-                                 Notes, SubmissionStatusID, SubmittedAt, SubmittedByUserID)
+                                 Notes, RepoMetadataJSON, RepoLastCommitAt, RepoStarCount, RepoForkCount,
+                                 SubmissionStatusID, SubmittedAt, SubmittedByUserID)
         VALUES (@TeamID, @RoundID, @RepositoryURL, @DemoURL, @ReportURL, @SlideURL, 
-                @Notes, 2, GETUTCDATE(), @SubmittedByUserID);
+                @Notes, @RepoMetadataJSON, @RepoLastCommitAt, @RepoStarCount, @RepoForkCount,
+                2, GETUTCDATE(), @SubmittedByUserID);
 
         SET @SubID = SCOPE_IDENTITY();
         INSERT INTO AuditLog (ActionType, EntityType, EntityID, ActorUserID)
@@ -936,6 +961,35 @@ CREATE NONCLUSTERED INDEX IX_RoundRankings_Round_Cat ON RoundRankings(RoundID, C
 CREATE NONCLUSTERED INDEX IX_EventRankings_Event_Cat ON EventRankings(EventID, CategoryID);
 CREATE NONCLUSTERED INDEX IX_Rounds_Event    ON Rounds(EventID);
 CREATE NONCLUSTERED INDEX IX_Categories_Event ON Categories(EventID);
+GO
+
+-- Trigger: Ngăn chặn 1 User tham gia 2 nhóm đang Active trong cùng 1 Event
+CREATE OR ALTER TRIGGER trg_EnforceOneTeamPerEvent
+ON TeamMembers
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Kiểm tra xem có User nào đang được Insert/Update (IsActive = 1)
+    -- mà lại có EventID trùng với một EventID mà User đó ĐÃ THAM GIA trước đó không.
+    IF EXISTS (
+        SELECT 1
+        FROM inserted i
+        JOIN Teams t_new ON i.TeamID = t_new.TeamID
+        JOIN TeamMembers tm_existing ON i.UserID = tm_existing.UserID
+        JOIN Teams t_existing ON tm_existing.TeamID = t_existing.TeamID
+        WHERE i.IsActive = 1 
+          AND tm_existing.IsActive = 1
+          AND t_new.EventID = t_existing.EventID
+          AND i.TeamMemberID <> tm_existing.TeamMemberID -- Loại trừ chính dòng đang thao tác
+    )
+    BEGIN
+        -- Bắn lỗi và hủy giao dịch (Rollback) ngay lập tức
+        THROW 51002, N'Lỗi DB: Một sinh viên chỉ được tham gia tối đa 1 nhóm đang hoạt động trong cùng 1 sự kiện!', 1;
+        ROLLBACK TRANSACTION;
+    END
+END;
 GO
 
 PRINT N' SEAL_HackathonDB fixed and created successfully.';
