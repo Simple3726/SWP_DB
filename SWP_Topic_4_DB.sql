@@ -306,6 +306,21 @@ CREATE TABLE TeamMembers (
 );
 GO
 
+CREATE TABLE TeamJoinRequests (
+    RequestID       INT IDENTITY(1,1) PRIMARY KEY,
+    TeamID          INT NOT NULL REFERENCES Teams(TeamID),
+    UserID          INT NOT NULL REFERENCES Users(UserID),
+    RequestStatus   NVARCHAR(20) NOT NULL DEFAULT N'PENDING',
+    RequestedAt     DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    RespondedAt     DATETIME2 NULL,
+    RespondedByID   INT NULL REFERENCES Users(UserID),
+    ResponseNote    NVARCHAR(500) NULL,
+    CONSTRAINT UQ_TeamJoinRequests_Pending UNIQUE (TeamID, UserID, RequestStatus),
+    CONSTRAINT CK_TeamJoinRequests_Status CHECK (
+        RequestStatus IN (N'PENDING', N'APPROVED', N'REJECTED', N'CANCELLED')
+    )
+);
+
 -- ============================================================
 -- SECTION 8: SUBMISSIONS (NỘP BÀI)
 -- ============================================================
