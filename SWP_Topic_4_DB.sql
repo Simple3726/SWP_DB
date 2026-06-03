@@ -1002,6 +1002,174 @@ VALUES
 GO
 
 -- ============================================================
+-- SAMPLE DATA FOR TEAM MODULE
+-- ============================================================
+
+DECLARE @AdminID INT;
+SELECT @AdminID = UserID
+FROM Users
+WHERE Email = N'admin@seal.fpt.edu.vn';
+
+-- Sample student users
+INSERT INTO Users (
+    Email,
+    PasswordHash,
+    FullName,
+    Phone,
+    UserTypeID,
+    AccountStatusID,
+    FPTStudentCode
+)
+VALUES
+    (N'leader1@fpt.edu.vn', N'$2a$12$PLACEHOLDER_HASH_REPLACE_IN_APP', N'Nguyen Van Leader', N'0900000001', 1, 2, N'SE170001'),
+    (N'member1@fpt.edu.vn', N'$2a$12$PLACEHOLDER_HASH_REPLACE_IN_APP', N'Tran Thi Member', N'0900000002', 1, 2, N'SE170002'),
+    (N'member2@fpt.edu.vn', N'$2a$12$PLACEHOLDER_HASH_REPLACE_IN_APP', N'Le Van Member', N'0900000003', 1, 2, N'SE170003'),
+    (N'applicant1@fpt.edu.vn', N'$2a$12$PLACEHOLDER_HASH_REPLACE_IN_APP', N'Pham Thi Applicant', N'0900000004', 1, 2, N'SE170004'),
+    (N'leader2@fpt.edu.vn', N'$2a$12$PLACEHOLDER_HASH_REPLACE_IN_APP', N'Hoang Van Leader', N'0900000005', 1, 2, N'SE170005');
+
+DECLARE @Leader1ID INT;
+DECLARE @Member1ID INT;
+DECLARE @Member2ID INT;
+DECLARE @Applicant1ID INT;
+DECLARE @Leader2ID INT;
+
+SELECT @Leader1ID = UserID FROM Users WHERE Email = N'leader1@fpt.edu.vn';
+SELECT @Member1ID = UserID FROM Users WHERE Email = N'member1@fpt.edu.vn';
+SELECT @Member2ID = UserID FROM Users WHERE Email = N'member2@fpt.edu.vn';
+SELECT @Applicant1ID = UserID FROM Users WHERE Email = N'applicant1@fpt.edu.vn';
+SELECT @Leader2ID = UserID FROM Users WHERE Email = N'leader2@fpt.edu.vn';
+
+-- Sample event
+INSERT INTO Events (
+    EventName,
+    Description,
+    Location,
+    EventStatusID,
+    RegistrationStart,
+    RegistrationEnd,
+    EventStartDate,
+    EventEndDate,
+    MaxTeamSize,
+    MinTeamSize,
+    CreatedByID
+)
+VALUES (
+    N'SEAL Hackathon 2026',
+    N'Sample event for testing team workflow',
+    N'FPT University',
+    2,
+    DATEADD(DAY, -7, GETUTCDATE()),
+    DATEADD(DAY, 7, GETUTCDATE()),
+    CAST(GETUTCDATE() AS DATE),
+    DATEADD(DAY, 3, CAST(GETUTCDATE() AS DATE)),
+    5,
+    3,
+    @AdminID
+);
+
+DECLARE @EventID INT = SCOPE_IDENTITY();
+
+-- Sample category
+INSERT INTO Categories (
+    EventID,
+    CategoryName,
+    Description,
+    SortOrder,
+    IsActive
+)
+VALUES (
+    @EventID,
+    N'Web Application',
+    N'Sample category for web application teams',
+    1,
+    1
+);
+
+DECLARE @CategoryID INT = SCOPE_IDENTITY();
+
+-- Active sample team
+INSERT INTO Teams (
+    EventID,
+    CategoryID,
+    TeamName,
+    TeamStatusID,
+    LeaderUserID
+)
+VALUES (
+    @EventID,
+    @CategoryID,
+    N'SEAL Builders',
+    2,
+    @Leader1ID
+);
+
+DECLARE @Team1ID INT = SCOPE_IDENTITY();
+
+-- Members of active team
+INSERT INTO TeamMembers (
+    TeamID,
+    UserID,
+    IsActive
+)
+VALUES
+    (@Team1ID, @Leader1ID, 1),
+    (@Team1ID, @Member1ID, 1),
+    (@Team1ID, @Member2ID, 1);
+
+-- Pending join request
+INSERT INTO TeamJoinRequests (
+    TeamID,
+    UserID,
+    RequestStatus
+)
+VALUES (
+    @Team1ID,
+    @Applicant1ID,
+    N'PENDING'
+);
+
+-- Disqualified sample team
+INSERT INTO Teams (
+    EventID,
+    CategoryID,
+    TeamName,
+    TeamStatusID,
+    LeaderUserID
+)
+VALUES (
+    @EventID,
+    @CategoryID,
+    N'Disqualified Demo Team',
+    3,
+    @Leader2ID
+);
+
+DECLARE @Team2ID INT = SCOPE_IDENTITY();
+
+INSERT INTO TeamMembers (
+    TeamID,
+    UserID,
+    IsActive
+)
+VALUES (
+    @Team2ID,
+    @Leader2ID,
+    1
+);
+
+INSERT INTO Disqualifications (
+    TeamID,
+    Reason,
+    DisqualifiedByID
+)
+VALUES (
+    @Team2ID,
+    N'Sample disqualification record for testing',
+    @AdminID
+);
+GO
+
+-- ============================================================
 -- SECTION 18: INDEXES FOR PERFORMANCE
 -- ============================================================
 
