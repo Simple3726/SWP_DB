@@ -968,7 +968,7 @@ SELECT
     sc.ScoreValue,
     sc.ScoreValue * ec.Weight AS WeightedScore,
     sc.Comment,
-    sc.ScoredAt,
+    sc.JudgedAt,
     sc.IsCalibration
 FROM Judging sc
 JOIN Submissions s ON s.SubmissionID = sc.SubmissionID
@@ -1035,7 +1035,7 @@ SELECT
     ec.Weight,
     ec.MaxScore,
     sc.ScoreValue,
-    sc.ScoredAt,
+    sc.JudgedAt,
     sc.IsCalibration
 FROM Judging sc
 JOIN Submissions s ON s.SubmissionID = sc.SubmissionID
