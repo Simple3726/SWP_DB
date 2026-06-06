@@ -384,22 +384,22 @@ GO
 -- SECTION 9: SCORING & EVALUATION
 -- ============================================================
 
-CREATE TABLE Scores (
-    ScoreID UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
+CREATE TABLE Judging (
+    JudgingID UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
     SubmissionID UNIQUEIDENTIFIER NOT NULL REFERENCES Submissions(SubmissionID),
     JudgeUserID UNIQUEIDENTIFIER NOT NULL REFERENCES Users(UserID),
     EventCriterionID UNIQUEIDENTIFIER NOT NULL REFERENCES EventCriteria(EventCriterionID),
     ScoreValue DECIMAL(6,2) NOT NULL,
     Comment NVARCHAR(MAX) NULL,
-    ScoredAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    JudgedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
     UpdatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
     IsCalibration BIT NOT NULL DEFAULT 0,
-    CONSTRAINT UQ_Scores_Sub_Judge_Criterion UNIQUE (SubmissionID, JudgeUserID, EventCriterionID),
-    CONSTRAINT CK_Scores_Value CHECK (ScoreValue >= 0)
+    CONSTRAINT UQ_Judging_Sub_Judge_Criterion UNIQUE (SubmissionID, JudgeUserID, EventCriterionID),
+    CONSTRAINT CK_Judging_Value CHECK (ScoreValue >= 0)
 );
 
-CREATE NONCLUSTERED INDEX IX_Scores_Submission ON Scores(SubmissionID);
-CREATE NONCLUSTERED INDEX IX_Scores_Judge ON Scores(JudgeUserID);
+CREATE NONCLUSTERED INDEX IX_Judging_Submission ON Judging(SubmissionID);
+CREATE NONCLUSTERED INDEX IX_Judging_Judge ON Judging(JudgeUserID);
 GO
 
 CREATE TABLE EvaluationAuditLogs (
@@ -407,7 +407,7 @@ CREATE TABLE EvaluationAuditLogs (
     EventID UNIQUEIDENTIFIER NOT NULL REFERENCES Events(EventID),
     ActionType NVARCHAR(50) NOT NULL,
     ActorUserID UNIQUEIDENTIFIER NOT NULL REFERENCES Users(UserID),
-    ScoreID UNIQUEIDENTIFIER NULL REFERENCES Scores(ScoreID),
+    JudgingID UNIQUEIDENTIFIER NULL REFERENCES Judging(JudgingID),
     TeamID UNIQUEIDENTIFIER NULL REFERENCES Teams(TeamID),
     SubmissionID UNIQUEIDENTIFIER NULL REFERENCES Submissions(SubmissionID),
     OldValue NVARCHAR(MAX) NULL,
@@ -426,14 +426,14 @@ CREATE TABLE EvaluationAuditLogs (
         )
     ),
     CONSTRAINT CK_EvaluationAuditLogs_Target CHECK (
-        ScoreID IS NOT NULL OR TeamID IS NOT NULL OR SubmissionID IS NOT NULL
+        JudgingID IS NOT NULL OR TeamID IS NOT NULL OR SubmissionID IS NOT NULL
     )
 );
 GO
 
 CREATE NONCLUSTERED INDEX IX_EvaluationAuditLogs_Event ON EvaluationAuditLogs(EventID);
 CREATE NONCLUSTERED INDEX IX_EvaluationAuditLogs_Actor ON EvaluationAuditLogs(ActorUserID);
-CREATE NONCLUSTERED INDEX IX_EvaluationAuditLogs_Score ON EvaluationAuditLogs(ScoreID) WHERE ScoreID IS NOT NULL;
+CREATE NONCLUSTERED INDEX IX_EvaluationAuditLogs_Score ON EvaluationAuditLogs(JudgingID) WHERE JudgingID IS NOT NULL;
 CREATE NONCLUSTERED INDEX IX_EvaluationAuditLogs_Team ON EvaluationAuditLogs(TeamID) WHERE TeamID IS NOT NULL;
 CREATE NONCLUSTERED INDEX IX_EvaluationAuditLogs_Submission ON EvaluationAuditLogs(SubmissionID) WHERE SubmissionID IS NOT NULL;
 CREATE NONCLUSTERED INDEX IX_EvaluationAuditLogs_CreatedAt ON EvaluationAuditLogs(CreatedAt DESC);
@@ -718,7 +718,7 @@ BEGIN
 
     DECLARE @RoundID UNIQUEIDENTIFIER;
     DECLARE @MaxScore DECIMAL(6,2);
-    DECLARE @ScoreID UNIQUEIDENTIFIER;
+    DECLARE @JudgingID UNIQUEIDENTIFIER;
     DECLARE @EventID UNIQUEIDENTIFIER;
     DECLARE @OldValue NVARCHAR(MAX);
     DECLARE @ActionType NVARCHAR(50);
@@ -739,39 +739,39 @@ BEGIN
     JOIN Events e ON e.EventID = t.EventID
     WHERE s.SubmissionID = @SubmissionID;
 
-    SELECT @ScoreID = ScoreID,
+    SELECT @JudgingID = JudgingID,
            @OldValue = N'{"score":' + CAST(ScoreValue AS NVARCHAR(30)) + N'}'
-    FROM Scores
+    FROM Judging
     WHERE SubmissionID = @SubmissionID
       AND JudgeUserID = @JudgeUserID
       AND EventCriterionID = @EventCriterionID;
 
-    IF @ScoreID IS NULL
+    IF @JudgingID IS NULL
     BEGIN
-        SET @ScoreID = NEWID();
+        SET @JudgingID = NEWID();
         SET @ActionType = N'SCORE_CREATED';
 
-        INSERT INTO Scores (ScoreID, SubmissionID, JudgeUserID, EventCriterionID, ScoreValue, Comment, IsCalibration)
-        VALUES (@ScoreID, @SubmissionID, @JudgeUserID, @EventCriterionID, @ScoreValue, @Comment, @IsCalibration);
+        INSERT INTO Judging (JudgingID, SubmissionID, JudgeUserID, EventCriterionID, ScoreValue, Comment, IsCalibration)
+        VALUES (@JudgingID, @SubmissionID, @JudgeUserID, @EventCriterionID, @ScoreValue, @Comment, @IsCalibration);
     END
     ELSE
     BEGIN
         SET @ActionType = N'SCORE_UPDATED';
 
-        UPDATE Scores
+        UPDATE Judging
         SET ScoreValue = @ScoreValue,
             Comment = @Comment,
             UpdatedAt = GETUTCDATE()
-        WHERE ScoreID = @ScoreID;
+        WHERE JudgingID = @JudgingID;
     END
 
     INSERT INTO AuditLog (ActionType, EntityType, EntityID, ActorUserID, NewValueJSON)
-    VALUES (N'SCORE_RECORDED', N'Scores', @ScoreID, @JudgeUserID,
+    VALUES (N'SCORE_RECORDED', N'Judging', @JudgingID, @JudgeUserID,
             N'{"criterion":"' + CAST(@EventCriterionID AS NVARCHAR(36)) +
             N'","score":' + CAST(@ScoreValue AS NVARCHAR(30)) + N'}');
 
-    INSERT INTO EvaluationAuditLogs (EventID, ActionType, ActorUserID, ScoreID, SubmissionID, OldValue, NewValue, Reason)
-    VALUES (@EventID, @ActionType, @JudgeUserID, @ScoreID, @SubmissionID, @OldValue,
+    INSERT INTO EvaluationAuditLogs (EventID, ActionType, ActorUserID, JudgingID, SubmissionID, OldValue, NewValue, Reason)
+    VALUES (@EventID, @ActionType, @JudgeUserID, @JudgingID, @SubmissionID, @OldValue,
             N'{"score":' + CAST(@ScoreValue AS NVARCHAR(30)) + N'}',
             N'Score recorded by judge');
 END;
@@ -856,7 +856,7 @@ BEGIN
             AVG(sc.ScoreValue) AS AverageScore
         FROM Submissions s
         JOIN Teams t ON t.TeamID = s.TeamID
-        JOIN Scores sc ON sc.SubmissionID = s.SubmissionID
+        JOIN Judging sc ON sc.SubmissionID = s.SubmissionID
         JOIN EventCriteria ec ON ec.EventCriterionID = sc.EventCriterionID
         LEFT JOIN RoundCriteria rc ON rc.EventCriterionID = ec.EventCriterionID
                                   AND rc.RoundID = s.RoundID
@@ -949,7 +949,7 @@ GO
 
 CREATE OR ALTER VIEW vw_JudgeScoreSheet AS
 SELECT
-    sc.ScoreID,
+    sc.JudgingID,
     e.EventID,
     e.EventName,
     r.RoundID,
@@ -970,7 +970,7 @@ SELECT
     sc.Comment,
     sc.ScoredAt,
     sc.IsCalibration
-FROM Scores sc
+FROM Judging sc
 JOIN Submissions s ON s.SubmissionID = sc.SubmissionID
 JOIN Teams t ON t.TeamID = s.TeamID
 JOIN Categories c ON c.CategoryID = t.CategoryID
@@ -992,7 +992,7 @@ SELECT
     STDEV(sc.ScoreValue) AS StdDevScore,
     MAX(sc.ScoreValue) - MIN(sc.ScoreValue) AS ScoreRange,
     VAR(sc.ScoreValue) AS VarianceScore
-FROM Scores sc
+FROM Judging sc
 JOIN Submissions s ON s.SubmissionID = sc.SubmissionID
 JOIN EventCriteria ec ON ec.EventCriterionID = sc.EventCriterionID
 WHERE sc.IsCalibration = 0
@@ -1024,7 +1024,7 @@ GO
 
 CREATE OR ALTER VIEW vw_AnonymizedScores AS
 SELECT
-    sc.ScoreID,
+    sc.JudgingID,
     r.RoundID,
     r.RoundName,
     c.CategoryID,
@@ -1037,7 +1037,7 @@ SELECT
     sc.ScoreValue,
     sc.ScoredAt,
     sc.IsCalibration
-FROM Scores sc
+FROM Judging sc
 JOIN Submissions s ON s.SubmissionID = sc.SubmissionID
 JOIN Teams t ON t.TeamID = s.TeamID
 JOIN Categories c ON c.CategoryID = t.CategoryID
