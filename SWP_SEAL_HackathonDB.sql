@@ -265,10 +265,19 @@ CREATE TABLE Categories (
     EventID UNIQUEIDENTIFIER NOT NULL REFERENCES Events(EventID),
     CategoryName NVARCHAR(300) NOT NULL,
     Description NVARCHAR(MAX) NULL,
-    MentorUserID UNIQUEIDENTIFIER NULL REFERENCES Users(UserID),
     SortOrder TINYINT NOT NULL DEFAULT 0,
     IsActive BIT NOT NULL DEFAULT 1,
     CONSTRAINT UQ_Categories_Event_Name UNIQUE (EventID, CategoryName)
+);
+GO
+
+CREATE TABLE CategoryMentors (
+    CategoryMentorID UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
+    CategoryID UNIQUEIDENTIFIER NOT NULL REFERENCES Categories(CategoryID),
+    MentorUserID UNIQUEIDENTIFIER NOT NULL REFERENCES Users(UserID),
+    AssignedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    IsActive BIT NOT NULL DEFAULT 1,
+    CONSTRAINT UQ_CategoryMentors UNIQUE (CategoryID, MentorUserID)
 );
 GO
 
@@ -278,7 +287,7 @@ GO
 
 CREATE TABLE Rounds (
     RoundID UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    EventID UNIQUEIDENTIFIER NOT NULL REFERENCES Events(EventID),
+    CategoryID UNIQUEIDENTIFIER NOT NULL REFERENCES Categories(CategoryID), -- Đã đổi từ EventID
     RoundName NVARCHAR(200) NOT NULL,
     RoundOrder TINYINT NOT NULL,
     RoundStatusID UNIQUEIDENTIFIER NOT NULL DEFAULT '40000000-0000-0000-0000-000000000001' REFERENCES RoundStatus(StatusID),
@@ -289,7 +298,7 @@ CREATE TABLE Rounds (
     AdvancementTopN INT NULL,
     IsCalibrationRound BIT NOT NULL DEFAULT 0,
     Description NVARCHAR(MAX) NULL,
-    CONSTRAINT UQ_Rounds_Event_Order UNIQUE (EventID, RoundOrder)
+    CONSTRAINT UQ_Rounds_Category_Order UNIQUE (CategoryID, RoundOrder) -- Ràng buộc theo Category
 );
 GO
 
@@ -387,19 +396,19 @@ GO
 CREATE TABLE Judging (
     JudgingID UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
     SubmissionID UNIQUEIDENTIFIER NOT NULL REFERENCES Submissions(SubmissionID),
-    JudgeUserID UNIQUEIDENTIFIER NOT NULL REFERENCES Users(UserID),
-    EventCriterionID UNIQUEIDENTIFIER NOT NULL REFERENCES EventCriteria(EventCriterionID),
+    RoundJudgeID UNIQUEIDENTIFIER NOT NULL REFERENCES RoundJudges(RoundJudgeID), -- Đã đổi từ JudgeUserID
+    RoundCriterionID UNIQUEIDENTIFIER NOT NULL REFERENCES RoundCriteria(RoundCriterionID), -- Đã đổi từ EventCriterionID
     ScoreValue DECIMAL(6,2) NOT NULL,
     Comment NVARCHAR(MAX) NULL,
     JudgedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
     UpdatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
     IsCalibration BIT NOT NULL DEFAULT 0,
-    CONSTRAINT UQ_Judging_Sub_Judge_Criterion UNIQUE (SubmissionID, JudgeUserID, EventCriterionID),
+    CONSTRAINT UQ_Judging_Sub_Judge_Criterion UNIQUE (SubmissionID, RoundJudgeID, RoundCriterionID),
     CONSTRAINT CK_Judging_Value CHECK (ScoreValue >= 0)
 );
 
 CREATE NONCLUSTERED INDEX IX_Judging_Submission ON Judging(SubmissionID);
-CREATE NONCLUSTERED INDEX IX_Judging_Judge ON Judging(JudgeUserID);
+CREATE NONCLUSTERED INDEX IX_Judging_RoundJudge ON Judging(RoundJudgeID);
 GO
 
 CREATE TABLE EvaluationAuditLogs (
@@ -705,10 +714,14 @@ BEGIN
 END;
 GO
 
+-- ============================================================
+-- CẬP NHẬT LẠI CÁC STORED PROCEDURES (SCORING & RANKING)
+-- ============================================================
+
 CREATE OR ALTER PROCEDURE sp_RecordScore
     @SubmissionID UNIQUEIDENTIFIER,
-    @JudgeUserID UNIQUEIDENTIFIER,
-    @EventCriterionID UNIQUEIDENTIFIER,
+    @RoundJudgeID UNIQUEIDENTIFIER,       -- Đã cập nhật
+    @RoundCriterionID UNIQUEIDENTIFIER,   -- Đã cập nhật
     @ScoreValue DECIMAL(6,2),
     @Comment NVARCHAR(MAX) = NULL,
     @IsCalibration BIT = 0
@@ -716,43 +729,52 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    DECLARE @RoundID UNIQUEIDENTIFIER;
+    DECLARE @JudgeUserID UNIQUEIDENTIFIER;
     DECLARE @MaxScore DECIMAL(6,2);
+    DECLARE @EventCriterionID UNIQUEIDENTIFIER;
     DECLARE @JudgingID UNIQUEIDENTIFIER;
     DECLARE @EventID UNIQUEIDENTIFIER;
     DECLARE @OldValue NVARCHAR(MAX);
     DECLARE @ActionType NVARCHAR(50);
 
-    SELECT @RoundID = RoundID FROM Submissions WHERE SubmissionID = @SubmissionID;
-
-    IF NOT EXISTS (SELECT 1 FROM RoundJudges WHERE RoundID = @RoundID AND UserID = @JudgeUserID)
-        THROW 52000, N'Judge is not assigned to this round.', 1;
-
-    SELECT @MaxScore = MaxScore FROM EventCriteria WHERE EventCriterionID = @EventCriterionID;
-
-    IF @ScoreValue > @MaxScore
-        THROW 52001, N'Score exceeds the maximum allowed value.', 1;
-
-    SELECT @EventID = e.EventID
+    -- 1. Xác thực Giám khảo có thuộc đúng vòng của bài nộp không và lấy UserID
+    SELECT @JudgeUserID = rj.UserID, @EventID = t.EventID
     FROM Submissions s
     JOIN Teams t ON t.TeamID = s.TeamID
-    JOIN Events e ON e.EventID = t.EventID
-    WHERE s.SubmissionID = @SubmissionID;
+    JOIN RoundJudges rj ON rj.RoundID = s.RoundID
+    WHERE s.SubmissionID = @SubmissionID AND rj.RoundJudgeID = @RoundJudgeID;
 
+    IF @JudgeUserID IS NULL
+        THROW 52000, N'Giám khảo không hợp lệ hoặc không được phân công chấm vòng thi này.', 1;
+
+    -- 2. Xác thực Tiêu chí có thuộc đúng vòng của bài nộp không và lấy MaxScore
+    SELECT @MaxScore = ec.MaxScore, @EventCriterionID = ec.EventCriterionID
+    FROM RoundCriteria rc
+    JOIN EventCriteria ec ON ec.EventCriterionID = rc.EventCriterionID
+    JOIN Submissions s ON s.RoundID = rc.RoundID
+    WHERE s.SubmissionID = @SubmissionID AND rc.RoundCriterionID = @RoundCriterionID;
+
+    IF @MaxScore IS NULL
+        THROW 52002, N'Tiêu chí không hợp lệ hoặc không thuộc vòng thi này.', 1;
+
+    IF @ScoreValue > @MaxScore
+        THROW 52001, N'Điểm số vượt quá giới hạn tối đa cho phép của tiêu chí này.', 1;
+
+    -- 3. Kiểm tra xem điểm đã tồn tại chưa để Insert hoặc Update
     SELECT @JudgingID = JudgingID,
            @OldValue = N'{"score":' + CAST(ScoreValue AS NVARCHAR(30)) + N'}'
     FROM Judging
     WHERE SubmissionID = @SubmissionID
-      AND JudgeUserID = @JudgeUserID
-      AND EventCriterionID = @EventCriterionID;
+      AND RoundJudgeID = @RoundJudgeID
+      AND RoundCriterionID = @RoundCriterionID;
 
     IF @JudgingID IS NULL
     BEGIN
         SET @JudgingID = NEWID();
         SET @ActionType = N'SCORE_CREATED';
 
-        INSERT INTO Judging (JudgingID, SubmissionID, JudgeUserID, EventCriterionID, ScoreValue, Comment, IsCalibration)
-        VALUES (@JudgingID, @SubmissionID, @JudgeUserID, @EventCriterionID, @ScoreValue, @Comment, @IsCalibration);
+        INSERT INTO Judging (JudgingID, SubmissionID, RoundJudgeID, RoundCriterionID, ScoreValue, Comment, IsCalibration)
+        VALUES (@JudgingID, @SubmissionID, @RoundJudgeID, @RoundCriterionID, @ScoreValue, @Comment, @IsCalibration);
     END
     ELSE
     BEGIN
@@ -765,15 +787,92 @@ BEGIN
         WHERE JudgingID = @JudgingID;
     END
 
+    -- 4. Ghi Audit Logs
     INSERT INTO AuditLog (ActionType, EntityType, EntityID, ActorUserID, NewValueJSON)
     VALUES (N'SCORE_RECORDED', N'Judging', @JudgingID, @JudgeUserID,
-            N'{"criterion":"' + CAST(@EventCriterionID AS NVARCHAR(36)) +
+            N'{"round_criterion":"' + CAST(@RoundCriterionID AS NVARCHAR(36)) +
             N'","score":' + CAST(@ScoreValue AS NVARCHAR(30)) + N'}');
 
     INSERT INTO EvaluationAuditLogs (EventID, ActionType, ActorUserID, JudgingID, SubmissionID, OldValue, NewValue, Reason)
     VALUES (@EventID, @ActionType, @JudgeUserID, @JudgingID, @SubmissionID, @OldValue,
             N'{"score":' + CAST(@ScoreValue AS NVARCHAR(30)) + N'}',
-            N'Score recorded by judge');
+            N'Giám khảo đã ghi nhận/cập nhật điểm');
+END;
+GO
+
+CREATE OR ALTER PROCEDURE sp_ComputeRoundRankings
+    @RoundID UNIQUEIDENTIFIER,
+    @CategoryID UNIQUEIDENTIFIER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DELETE FROM RoundRankings WHERE RoundID = @RoundID AND CategoryID = @CategoryID;
+
+    ;WITH ScoreSummary AS (
+        SELECT
+            s.SubmissionID,
+            s.TeamID,
+            SUM(sc.ScoreValue * COALESCE(rc.Weight, ec.Weight)) AS WeightedTotal,
+            AVG(sc.ScoreValue) AS AverageScore
+        FROM Submissions s
+        JOIN Teams t ON t.TeamID = s.TeamID
+        JOIN Judging sc ON sc.SubmissionID = s.SubmissionID
+        JOIN RoundCriteria rc ON rc.RoundCriterionID = sc.RoundCriterionID    -- Đã cập nhật logic nối
+        JOIN EventCriteria ec ON ec.EventCriterionID = rc.EventCriterionID
+        WHERE s.RoundID = @RoundID
+          AND t.CategoryID = @CategoryID
+          AND s.SubmissionStatusID != '50000000-0000-0000-0000-000000000004'
+          AND t.TeamStatusID != '60000000-0000-0000-0000-000000000003'
+          AND sc.IsCalibration = 0
+        GROUP BY s.SubmissionID, s.TeamID
+    ),
+    Ranked AS (
+        SELECT *, RANK() OVER (ORDER BY WeightedTotal DESC) AS RankPosition
+        FROM ScoreSummary
+    )
+    INSERT INTO RoundRankings (RoundID, CategoryID, TeamID, SubmissionID, TotalScore, AverageScore, RankPosition, IsAdvanced)
+    SELECT
+        @RoundID,
+        @CategoryID,
+        r.TeamID,
+        r.SubmissionID,
+        r.WeightedTotal,
+        r.AverageScore,
+        r.RankPosition,
+        CASE WHEN rnd.AdvancementTopN IS NOT NULL AND r.RankPosition <= rnd.AdvancementTopN THEN 1 ELSE 0 END
+    FROM Ranked r
+    CROSS JOIN Rounds rnd
+    WHERE rnd.RoundID = @RoundID;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE sp_ComputeEventRankings
+    @EventID UNIQUEIDENTIFIER,
+    @CategoryID UNIQUEIDENTIFIER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DELETE FROM EventRankings WHERE EventID = @EventID AND CategoryID = @CategoryID;
+
+    ;WITH FinalScores AS (
+        SELECT rr.TeamID, AVG(rr.TotalScore) AS FinalScore
+        FROM RoundRankings rr
+        JOIN Rounds r ON r.RoundID = rr.RoundID
+        JOIN Categories c ON c.CategoryID = r.CategoryID -- Nối qua Categories vì Rounds đã đổi tham chiếu
+        WHERE c.EventID = @EventID
+          AND rr.CategoryID = @CategoryID
+        GROUP BY rr.TeamID
+    )
+    INSERT INTO EventRankings (EventID, CategoryID, TeamID, FinalScore, RankPosition)
+    SELECT
+        @EventID,
+        @CategoryID,
+        TeamID,
+        FinalScore,
+        RANK() OVER (ORDER BY FinalScore DESC)
+    FROM FinalScores;
 END;
 GO
 
@@ -839,81 +938,6 @@ BEGIN
 END;
 GO
 
-CREATE OR ALTER PROCEDURE sp_ComputeRoundRankings
-    @RoundID UNIQUEIDENTIFIER,
-    @CategoryID UNIQUEIDENTIFIER
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    DELETE FROM RoundRankings WHERE RoundID = @RoundID AND CategoryID = @CategoryID;
-
-    ;WITH ScoreSummary AS (
-        SELECT
-            s.SubmissionID,
-            s.TeamID,
-            SUM(sc.ScoreValue * COALESCE(rc.Weight, ec.Weight)) AS WeightedTotal,
-            AVG(sc.ScoreValue) AS AverageScore
-        FROM Submissions s
-        JOIN Teams t ON t.TeamID = s.TeamID
-        JOIN Judging sc ON sc.SubmissionID = s.SubmissionID
-        JOIN EventCriteria ec ON ec.EventCriterionID = sc.EventCriterionID
-        LEFT JOIN RoundCriteria rc ON rc.EventCriterionID = ec.EventCriterionID
-                                  AND rc.RoundID = s.RoundID
-        WHERE s.RoundID = @RoundID
-          AND t.CategoryID = @CategoryID
-          AND s.SubmissionStatusID != '50000000-0000-0000-0000-000000000004'
-          AND t.TeamStatusID != '60000000-0000-0000-0000-000000000003'
-          AND sc.IsCalibration = 0
-        GROUP BY s.SubmissionID, s.TeamID
-    ),
-    Ranked AS (
-        SELECT *, RANK() OVER (ORDER BY WeightedTotal DESC) AS RankPosition
-        FROM ScoreSummary
-    )
-    INSERT INTO RoundRankings (RoundID, CategoryID, TeamID, SubmissionID, TotalScore, AverageScore, RankPosition, IsAdvanced)
-    SELECT
-        @RoundID,
-        @CategoryID,
-        r.TeamID,
-        r.SubmissionID,
-        r.WeightedTotal,
-        r.AverageScore,
-        r.RankPosition,
-        CASE WHEN rnd.AdvancementTopN IS NOT NULL AND r.RankPosition <= rnd.AdvancementTopN THEN 1 ELSE 0 END
-    FROM Ranked r
-    CROSS JOIN Rounds rnd
-    WHERE rnd.RoundID = @RoundID;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE sp_ComputeEventRankings
-    @EventID UNIQUEIDENTIFIER,
-    @CategoryID UNIQUEIDENTIFIER
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    DELETE FROM EventRankings WHERE EventID = @EventID AND CategoryID = @CategoryID;
-
-    ;WITH FinalScores AS (
-        SELECT rr.TeamID, AVG(rr.TotalScore) AS FinalScore
-        FROM RoundRankings rr
-        JOIN Rounds r ON r.RoundID = rr.RoundID
-        WHERE r.EventID = @EventID
-          AND rr.CategoryID = @CategoryID
-        GROUP BY rr.TeamID
-    )
-    INSERT INTO EventRankings (EventID, CategoryID, TeamID, FinalScore, RankPosition)
-    SELECT
-        @EventID,
-        @CategoryID,
-        TeamID,
-        FinalScore,
-        RANK() OVER (ORDER BY FinalScore DESC)
-    FROM FinalScores;
-END;
-GO
 
 -- ============================================================
 -- SECTION 16: VIEWS
@@ -941,7 +965,7 @@ SELECT
 FROM Submissions s
 JOIN Teams t ON t.TeamID = s.TeamID
 JOIN Categories c ON c.CategoryID = t.CategoryID
-JOIN Events e ON e.EventID = t.EventID
+JOIN Events e ON e.EventID = c.EventID  -- Lấy EventID qua Category
 JOIN Rounds r ON r.RoundID = s.RoundID
 JOIN SubmissionStatus ss ON ss.StatusID = s.SubmissionStatusID
 JOIN Users u ON u.UserID = s.SubmittedByUserID;
@@ -958,15 +982,16 @@ SELECT
     t.TeamName,
     c.CategoryName,
     s.SubmissionID,
-    u.UserID AS JudgeUserID,
+    rj.UserID AS JudgeUserID,       -- Lấy từ bảng trung gian RoundJudges
     u.FullName AS JudgeName,
     ut.TypeName AS JudgeType,
+    rc.RoundCriterionID,
     ec.EventCriterionID,
     ec.CriterionName,
-    ec.Weight,
+    COALESCE(rc.Weight, ec.Weight) AS Weight,
     ec.MaxScore,
     sc.ScoreValue,
-    sc.ScoreValue * ec.Weight AS WeightedScore,
+    sc.ScoreValue * COALESCE(rc.Weight, ec.Weight) AS WeightedScore,
     sc.Comment,
     sc.JudgedAt,
     sc.IsCalibration
@@ -974,36 +999,40 @@ FROM Judging sc
 JOIN Submissions s ON s.SubmissionID = sc.SubmissionID
 JOIN Teams t ON t.TeamID = s.TeamID
 JOIN Categories c ON c.CategoryID = t.CategoryID
-JOIN Events e ON e.EventID = t.EventID
+JOIN Events e ON e.EventID = c.EventID
 JOIN Rounds r ON r.RoundID = s.RoundID
-JOIN EventCriteria ec ON ec.EventCriterionID = sc.EventCriterionID
-JOIN Users u ON u.UserID = sc.JudgeUserID
-JOIN UserType ut ON ut.UserTypeID = u.UserTypeID;
+JOIN RoundJudges rj ON rj.RoundJudgeID = sc.RoundJudgeID       -- Đi qua trung gian
+JOIN Users u ON u.UserID = rj.UserID
+JOIN UserType ut ON ut.UserTypeID = u.UserTypeID
+JOIN RoundCriteria rc ON rc.RoundCriterionID = sc.RoundCriterionID -- Đi qua trung gian
+JOIN EventCriteria ec ON ec.EventCriterionID = rc.EventCriterionID;
 GO
 
 CREATE OR ALTER VIEW vw_JudgeVariancePerCriterion AS
 SELECT
     s.RoundID,
-    sc.EventCriterionID,
+    rc.RoundCriterionID,
     ec.CriterionName,
     sc.SubmissionID,
-    COUNT(DISTINCT sc.JudgeUserID) AS JudgeCount,
+    COUNT(DISTINCT rj.UserID) AS JudgeCount,
     AVG(sc.ScoreValue) AS MeanScore,
     STDEV(sc.ScoreValue) AS StdDevScore,
     MAX(sc.ScoreValue) - MIN(sc.ScoreValue) AS ScoreRange,
     VAR(sc.ScoreValue) AS VarianceScore
 FROM Judging sc
 JOIN Submissions s ON s.SubmissionID = sc.SubmissionID
-JOIN EventCriteria ec ON ec.EventCriterionID = sc.EventCriterionID
+JOIN RoundJudges rj ON rj.RoundJudgeID = sc.RoundJudgeID
+JOIN RoundCriteria rc ON rc.RoundCriterionID = sc.RoundCriterionID
+JOIN EventCriteria ec ON ec.EventCriterionID = rc.EventCriterionID
 WHERE sc.IsCalibration = 0
-GROUP BY s.RoundID, sc.EventCriterionID, ec.CriterionName, sc.SubmissionID;
+GROUP BY s.RoundID, rc.RoundCriterionID, ec.CriterionName, sc.SubmissionID;
 GO
 
 CREATE OR ALTER VIEW vw_RoundLeaderboard AS
 SELECT
     rr.RoundID,
     r.RoundName,
-    r.EventID,
+    e.EventID,
     e.EventName,
     rr.CategoryID,
     c.CategoryName,
@@ -1016,8 +1045,8 @@ SELECT
     ts.StatusName AS TeamStatus
 FROM RoundRankings rr
 JOIN Rounds r ON r.RoundID = rr.RoundID
-JOIN Events e ON e.EventID = r.EventID
-JOIN Categories c ON c.CategoryID = rr.CategoryID
+JOIN Categories c ON c.CategoryID = r.CategoryID
+JOIN Events e ON e.EventID = c.EventID
 JOIN Teams t ON t.TeamID = rr.TeamID
 JOIN TeamStatus ts ON ts.StatusID = t.TeamStatusID;
 GO
@@ -1030,9 +1059,9 @@ SELECT
     c.CategoryID,
     c.CategoryName,
     HASHBYTES('SHA2_256', CAST(sc.SubmissionID AS NVARCHAR(36))) AS AnonymousSubmissionID,
-    HASHBYTES('SHA2_256', CAST(sc.JudgeUserID AS NVARCHAR(36))) AS AnonymousJudgeID,
+    HASHBYTES('SHA2_256', CAST(rj.UserID AS NVARCHAR(36))) AS AnonymousJudgeID, -- Hash từ UserID gốc
     ec.CriterionName,
-    ec.Weight,
+    COALESCE(rc.Weight, ec.Weight) AS Weight,
     ec.MaxScore,
     sc.ScoreValue,
     sc.JudgedAt,
@@ -1042,7 +1071,9 @@ JOIN Submissions s ON s.SubmissionID = sc.SubmissionID
 JOIN Teams t ON t.TeamID = s.TeamID
 JOIN Categories c ON c.CategoryID = t.CategoryID
 JOIN Rounds r ON r.RoundID = s.RoundID
-JOIN EventCriteria ec ON ec.EventCriterionID = sc.EventCriterionID;
+JOIN RoundJudges rj ON rj.RoundJudgeID = sc.RoundJudgeID
+JOIN RoundCriteria rc ON rc.RoundCriterionID = sc.RoundCriterionID
+JOIN EventCriteria ec ON ec.EventCriterionID = rc.EventCriterionID;
 GO
 
 -- ============================================================
@@ -1146,7 +1177,7 @@ CREATE NONCLUSTERED INDEX IX_Submissions_Round ON Submissions(RoundID);
 CREATE NONCLUSTERED INDEX IX_Submissions_Team ON Submissions(TeamID);
 CREATE NONCLUSTERED INDEX IX_RoundRankings_Round_Cat ON RoundRankings(RoundID, CategoryID);
 CREATE NONCLUSTERED INDEX IX_EventRankings_Event_Cat ON EventRankings(EventID, CategoryID);
-CREATE NONCLUSTERED INDEX IX_Rounds_Event ON Rounds(EventID);
+CREATE NONCLUSTERED INDEX IX_Rounds_Categories ON Rounds(CategoryID);
 CREATE NONCLUSTERED INDEX IX_Categories_Event ON Categories(EventID);
 GO
 
@@ -1175,5 +1206,26 @@ BEGIN
 END;
 GO
 
+CREATE OR ALTER TRIGGER trg_PreventMentorJudgingOwnCategory
+ON RoundJudges
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF EXISTS (
+        SELECT 1
+        FROM inserted i
+        JOIN Rounds r ON i.RoundID = r.RoundID
+        JOIN CategoryMentors cm ON cm.CategoryID = r.CategoryID 
+                                AND cm.MentorUserID = i.UserID
+        WHERE cm.IsActive = 1
+    )
+    BEGIN
+        ROLLBACK TRANSACTION;
+        THROW 52002, N'Lỗi DB: Một người không thể làm giám khảo cho vòng thi thuộc Hạng mục (Category) mà họ đang làm Mentor!', 1;
+    END
+END;
+GO
 PRINT N'SEAL_HackathonDB UUID version created successfully.';
 GO
