@@ -321,6 +321,12 @@ CREATE TABLE RoundCriteria (
 );
 GO
 
+ALTER TABLE RoundCriteria ADD 
+    criterionName NVARCHAR(255),
+    description NVARCHAR(MAX),
+    MaxScore DECIMAL(18, 2),
+    SortOrder INT;
+
 -- ============================================================
 -- SECTION 7: TEAMS
 -- ============================================================
