@@ -153,7 +153,6 @@ INSERT INTO AwardTier (TierID, TierName) VALUES
     (@AT_PRESENTATION, N'Best Presentation'),
     (@AT_SPECIAL, N'Special Award');
 GO
-
 -- ============================================================
 -- SECTION 2: USERS & AUTHENTICATION
 -- ============================================================
@@ -201,6 +200,61 @@ CREATE TABLE RefreshTokens (
     DeviceInfo NVARCHAR(500) NULL
 );
 GO
+-- ============================================================
+-- EMAIL VERIFICATION TOKENS
+-- ============================================================
+
+CREATE TABLE VerificationTokens (
+    TokenID UNIQUEIDENTIFIER NOT NULL
+        DEFAULT NEWID()
+        PRIMARY KEY,
+
+    UserID UNIQUEIDENTIFIER NOT NULL
+        REFERENCES Users(UserID),
+
+    TokenHash NVARCHAR(512) NOT NULL
+        UNIQUE,
+
+    CreatedAt DATETIME2 NOT NULL
+        DEFAULT GETUTCDATE(),
+
+    ExpiresAt DATETIME2 NOT NULL,
+
+    UsedAt DATETIME2 NULL
+);
+
+CREATE NONCLUSTERED INDEX IX_VerificationTokens_UserID
+ON VerificationTokens(UserID);
+
+GO
+-- ============================================================
+-- PASSWORD RESET TOKENS
+-- ============================================================
+
+CREATE TABLE PasswordResetTokens (
+    TokenID UNIQUEIDENTIFIER NOT NULL
+        DEFAULT NEWID()
+        PRIMARY KEY,
+
+    UserID UNIQUEIDENTIFIER NOT NULL
+        REFERENCES Users(UserID),
+
+    TokenHash NVARCHAR(512) NOT NULL
+        UNIQUE,
+
+    CreatedAt DATETIME2 NOT NULL
+        DEFAULT GETUTCDATE(),
+
+    ExpiresAt DATETIME2 NOT NULL,
+
+    UsedAt DATETIME2 NULL
+);
+
+CREATE NONCLUSTERED INDEX IX_PasswordResetTokens_UserID
+ON PasswordResetTokens(UserID);
+
+GO
+
 
 -- ============================================================
 -- SECTION 3: SCORING CRITERIA TEMPLATES
